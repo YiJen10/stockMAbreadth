@@ -121,7 +121,7 @@ def get_breadth_data(index_name, tickers):
              df_close = data.to_frame()
         elif 'Close' in data.columns:
              # Use .copy() so we can delete the massive original 'data' object
-             df_close = data['Close'].copy
+             df_close = data['Close'].copy()
         else:
              df_close = data.copy() # Fallback if structure is unexpected
 
