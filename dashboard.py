@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np # NEW: For safe math calculations
 import requests
 import time
 from io import StringIO
@@ -20,25 +21,25 @@ def clean_us_ticker(ticker):
 def get_sp500_tickers():
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
         response = requests.get(url, headers=headers)
         df = pd.read_html(StringIO(response.text))[0]
         return [clean_us_ticker(t) for t in df['Symbol'].tolist()]
-    except:
+    except Exception as e:
         return ["AAPL", "MSFT", "GOOGL"]
 
 @st.cache_data(ttl=86400)
 def get_nasdaq100_tickers():
     try:
         url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         response = requests.get(url, headers=headers)
         tables = pd.read_html(StringIO(response.text))
         for table in tables:
             if 'Ticker' in table.columns:
                 return [clean_us_ticker(t) for t in table['Ticker'].tolist()]
         return ["AAPL", "MSFT", "NVDA"]
-    except:
+    except Exception as e:
         return ["AAPL", "MSFT", "NVDA"]
 
 # --- INITIALIZE SESSION STATE FOR TICKERS ---
@@ -96,37 +97,6 @@ if 'custom_tickers' not in st.session_state:
         ]
     }
 
-# --- HELPER: CLEAN TICKERS ---
-def clean_us_ticker(ticker):
-    return str(ticker).replace(".", "-")
-
-# --- DATA FETCHING (US) ---
-@st.cache_data(ttl=86400)
-def get_sp500_tickers():
-    try:
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        # Make the scraper look like a real browser to prevent Wikipedia blocks
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-        response = requests.get(url, headers=headers)
-        df = pd.read_html(StringIO(response.text))[0]
-        return [clean_us_ticker(t) for t in df['Symbol'].tolist()]
-    except Exception as e:
-        return ["AAPL", "MSFT", "GOOGL"]
-
-@st.cache_data(ttl=86400)
-def get_nasdaq100_tickers():
-    try:
-        url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        response = requests.get(url, headers=headers)
-        tables = pd.read_html(StringIO(response.text))
-        for table in tables:
-            if 'Ticker' in table.columns:
-                return [clean_us_ticker(t) for t in table['Ticker'].tolist()]
-        return ["AAPL", "MSFT", "NVDA"]
-    except Exception as e:
-        return ["AAPL", "MSFT", "NVDA"]
-
 # --- CALCULATION LOGIC (HOLIDAY AWARE) ---
 @st.cache_data(ttl=300)
 def get_breadth_data(index_name, tickers):
@@ -134,77 +104,92 @@ def get_breadth_data(index_name, tickers):
         return None, None
 
     try:
-        # 1. Download data (Let yfinance handle default threading)
-        data = yf.download(tickers, period="5y", progress=False)
+        # 1. Download data (Threads enabled for speed)
+        data = yf.download(tickers, period="5y", progress=False, threads=True)
         
-        # 2. Extract Close Prices Safely
+        if data.empty:
+            return None, None
+
+        # 2. BULLETPROOF Close Price Extractor 
+        # Prevents yfinance from dumping Volume and High/Low prices into the math
         if isinstance(data.columns, pd.MultiIndex):
-             df_close = data['Close'].copy()
+            if 'Close' in data.columns.get_level_values(0):
+                df_close = data['Close'].copy()
+            elif 'Close' in data.columns.get_level_values(1):
+                df_close = data.xs('Close', level=1, axis=1).copy()
+            else:
+                return None, None
         elif 'Close' in data.columns:
-             df_close = data[['Close']].copy()
-             # Ensure the column retains the ticker name if there's only 1 stock
-             if len(tickers) == 1:
-                 df_close.columns = [tickers[0]]
+            df_close = data[['Close']].copy()
+            if len(tickers) == 1:
+                df_close.columns = [tickers[0]]
         else:
-             df_close = data.copy()
+            return None, None
 
         # Free memory immediately
         del data 
         gc.collect()
 
-        # 3. FIX: Clean, deduplicate, and sort the index (CRITICAL FOR PLOTLY)
-        # Convert to UTC, remove timezone, and floor to midnight for perfect daily alignment
-        df_close.index = pd.to_datetime(df_close.index, utc=True).tz_localize(None).floor('D')
-        # Drop any duplicate dates caused by exchange adjustments
-        df_close = df_close[~df_close.index.duplicated(keep='last')]
-        # Explicitly sort chronologically so the line chart draws left-to-right properly
+        # 3. Safely format Dates and Drop Duplicates
+        df_close.index = pd.to_datetime(df_close.index, utc=True).tz_localize(None)
         df_close = df_close.sort_index()
+        df_close = df_close[~df_close.index.duplicated(keep='last')]
 
         # 4. Clean empty columns and rows
+        df_close = df_close.apply(pd.to_numeric, errors='coerce')
         df_close = df_close.dropna(axis=1, how='all')
-        if df_close.empty:
-            return None, None
-
         df_close = df_close.dropna(axis=0, how='all')
         df_close = df_close.ffill()
+
+        if df_close.empty:
+            return None, None
 
         # 5. Calculate MAs
         ma20 = df_close.rolling(window=20).mean()
         ma50 = df_close.rolling(window=50).mean()
         ma200 = df_close.rolling(window=200).mean()
 
-        count_20 = ma20.count(axis=1)
-        count_50 = ma50.count(axis=1)
-        count_200 = ma200.count(axis=1)
+        # Count strictly how many stocks have a VALID Moving Average today
+        count_20 = ma20.notna().sum(axis=1)
+        count_50 = ma50.notna().sum(axis=1)
+        count_200 = ma200.notna().sum(axis=1)
 
+        # Count how many are above
         above_20 = (df_close > ma20).sum(axis=1)
         above_50 = (df_close > ma50).sum(axis=1)
         above_200 = (df_close > ma200).sum(axis=1)
 
-        pct_20 = (above_20 / count_20 * 100)
-        pct_50 = (above_50 / count_50 * 100)
-        pct_200 = (above_200 / count_200 * 100)
+        # Calculate percentages safely (fill with NaN so Plotly doesn't draw zero-lines)
+        pct_20 = np.where(count_20 > 0, (above_20 / count_20) * 100, np.nan)
+        pct_50 = np.where(count_50 > 0, (above_50 / count_50) * 100, np.nan)
+        pct_200 = np.where(count_200 > 0, (above_200 / count_200) * 100, np.nan)
 
-        # 6. FIX: Dynamic Minimum Threshold
-        # Ensures the chart still draws even if yfinance failed to download the majority of the list
+        # 6. Apply Dynamic Threshold
         min_stocks = min(5, len(df_close.columns))
         valid_days = count_20 >= min_stocks
         
-        history_df = pd.DataFrame({
-            "% > MA20": pct_20[valid_days],
-            "% > MA50": pct_50[valid_days],
-            "% > MA200": pct_200[valid_days]
-        }).fillna(0)
+        history_df = pd.DataFrame(index=df_close.index)
+        history_df["% > MA20"] = pct_20
+        history_df["% > MA50"] = pct_50
+        history_df["% > MA200"] = pct_200
+        
+        # Apply the valid days mask and drop entirely empty rows
+        history_df = history_df[valid_days]
+        history_df = history_df.dropna(how='all')
 
-        # Catch if the dataframe was completely filtered out
         if history_df.empty:
             return None, None
 
+        # Safely grab the latest valid number for the snapshot table
+        val_20 = history_df["% > MA20"].dropna().iloc[-1] if not history_df["% > MA20"].dropna().empty else 0
+        val_50 = history_df["% > MA50"].dropna().iloc[-1] if not history_df["% > MA50"].dropna().empty else 0
+        val_200 = history_df["% > MA200"].dropna().iloc[-1] if not history_df["% > MA200"].dropna().empty else 0
+
         latest = {
             "Index": index_name,
-            "% > MA20": round(history_df["% > MA20"].iloc[-1], 2),
-            "% > MA50": round(history_df["% > MA50"].iloc[-1], 2),
-            "% > MA200": round(history_df["% > MA200"].iloc[-1], 2)
+            "% > MA20": round(val_20, 2),
+            "% > MA50": round(val_50, 2),
+            "% > MA200": round(val_200, 2)
         }
         
         return latest, history_df
