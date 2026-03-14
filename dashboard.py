@@ -106,12 +106,11 @@ def get_breadth_data(index_name, tickers):
     try:
         data = yf.download(tickers, period="5y", progress=False, threads=False)
 
-        # 1. BULLETPROOF 'Close' EXTRACTION 
-        # Accounts for yfinance's recent column format changes
+        # 1. Safely extract Close prices (accounts for new yfinance format)
         if isinstance(data.columns, pd.MultiIndex):
-            if 'Close' in data.columns.levels[0]:
+            if 'Close' in data.columns.get_level_values(0):
                 df_close = data['Close'].copy()
-            elif 'Close' in data.columns.levels[1]:
+            elif 'Close' in data.columns.get_level_values(1):
                 df_close = data.xs('Close', level=1, axis=1).copy()
             else:
                 df_close = data.copy()
@@ -123,38 +122,31 @@ def get_breadth_data(index_name, tickers):
             else:
                 df_close = data.copy()
 
-        # Force delete the massive original dataframe to save RAM
+        # Free memory
         del data
         gc.collect()
 
-        # Drop tickers that failed
+        # Drop tickers that failed to download entirely
         df_close = df_close.dropna(axis=1, how='all')
+        if df_close.empty: return None, None
 
-        if df_close.empty:
-            return None, None
+        # 2. BULLETPROOF DATETIME FIX
+        # Converts whatever format yfinance returns into an undeniable UTC Datetime, then strips timezone.
+        df_close.index = pd.to_datetime(df_close.index, utc=True).tz_convert(None)
 
-        # 2. BULLETPROOF DATETIME CLEANING
-        # Fixes the Plotly X-Axis "trading days row number" issue permanently
-        if isinstance(df_close.index, pd.DatetimeIndex):
-            if df_close.index.tz is not None:
-                df_close.index = df_close.index.tz_convert(None)
-        else:
-            df_close.index = pd.to_datetime(df_close.index, errors='coerce').tz_localize(None)
-
-        # Remove duplicate rows and any failed date parses
-        df_close = df_close[df_close.index.notna()]
+        # Remove duplicate dates if any
         df_close = df_close[~df_close.index.duplicated(keep='first')].sort_index()
 
-        # 3. HOLIDAY FILTERING
+        # 3. Handle holidays & suspensions
         df_close = df_close.dropna(axis=0, how='all')
         df_close = df_close.ffill()
 
-        # 4. Calculate MAs
+        # 4. Moving Averages
         ma20 = df_close.rolling(window=20).mean()
         ma50 = df_close.rolling(window=50).mean()
         ma200 = df_close.rolling(window=200).mean()
 
-        # 5. Calculate Breadth (Your original pandas math)
+        # 5. Breadth Calculations
         count_20 = ma20.count(axis=1)
         count_50 = ma50.count(axis=1)
         count_200 = ma200.count(axis=1)
@@ -167,7 +159,7 @@ def get_breadth_data(index_name, tickers):
         pct_50 = (above_50 / count_50 * 100)
         pct_200 = (above_200 / count_200 * 100)
 
-        # 6. Final Clean
+        # 6. Final Clean & Build
         min_stocks = 5
         valid_days = count_20 >= min_stocks
         
@@ -177,8 +169,10 @@ def get_breadth_data(index_name, tickers):
             "% > MA200": pct_200[valid_days]
         }).fillna(0)
 
-        if history_df.empty:
-            return None, None
+        # Strictly enforce the index name so we can safely extract it later
+        history_df.index.name = "Date"
+
+        if history_df.empty: return None, None
 
         latest = {
             "Index": index_name,
@@ -198,6 +192,7 @@ st.title("📊 Live Market Breadth Dashboard")
 myt_time = (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
 st.write(f"Last Updated: {myt_time} (MYT)")
 
+# Make sure to press this button after saving to clear the corrupted cache!
 if st.button('Refresh Data Now'):
     st.cache_data.clear()
     st.rerun()
@@ -267,22 +262,23 @@ with col1:
 
 with col2:
     if selected_index in history_data:
-        df_chart = history_data[selected_index]
+        # BULLETPROOF PLOTLY FIX:
+        # We pull the Date out of the index and turn it into a standard column right before plotting.
+        # This prevents Plotly from misunderstanding the X-axis.
+        df_chart = history_data[selected_index].reset_index()
         
-        # Create Plotly Figure
         fig = go.Figure()
 
         if show_ma20:
-            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["% > MA20"],
+            fig.add_trace(go.Scatter(x=df_chart["Date"], y=df_chart["% > MA20"],
                                      mode='lines', name='% > MA20', line=dict(color='blue')))
         if show_ma50:
-            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["% > MA50"],
+            fig.add_trace(go.Scatter(x=df_chart["Date"], y=df_chart["% > MA50"],
                                      mode='lines', name='% > MA50', line=dict(color='red')))
         if show_ma200:
-            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["% > MA200"],
+            fig.add_trace(go.Scatter(x=df_chart["Date"], y=df_chart["% > MA200"],
                                      mode='lines', name='% > MA200', line=dict(color='green')))
 
-        # Add Range Slider & Zoom
         fig.update_layout(
             title=f"{selected_index} Breadth History",
             xaxis=dict(
