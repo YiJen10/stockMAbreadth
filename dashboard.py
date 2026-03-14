@@ -296,30 +296,80 @@ with tab1:
         else:
             st.warning("Data not available for this index.")
 
+# --- HELPER: VALIDATE TICKER ---
+def check_ticker_validity(ticker_symbol):
+    """Checks if a ticker exists and returns its company name if found."""
+    try:
+        # Download 1 day of data to confirm it actually trades
+        test_data = yf.download(ticker_symbol, period="1d", progress=False)
+        if test_data.empty:
+            return False, None
+            
+        # Try to fetch the short name
+        tkr = yf.Ticker(ticker_symbol)
+        name = tkr.info.get('shortName', 'Name Not Available')
+        return True, name
+    except:
+        return False, None
+
 # --- TICKER MANAGEMENT TAB ---
 with tab2:
-    st.subheader("Update Non-US Index Tickers")
-    st.info("Paste your updated comma-separated list of tickers from Moomoo below. Edits are saved to your current session.")
+    st.subheader("Manage Non-US Index Tickers")
     
-    # Select which index to edit
+    # 1. Select Index to View
     editable_indices = list(st.session_state['custom_tickers'].keys())
-    index_to_edit = st.selectbox("Select Index to modify:", editable_indices)
+    index_to_edit = st.selectbox("Select Index to view/modify:", editable_indices)
     
-    # Convert current list to a string for the text box
-    current_tickers_str = ", ".join(st.session_state['custom_tickers'][index_to_edit])
+    # 2. Display Current List
+    st.write(f"**Current Constituents: {index_to_edit} ({len(st.session_state['custom_tickers'][index_to_edit])} stocks)**")
     
-    # Text area for user input
-    new_tickers_str = st.text_area(f"Tickers for {index_to_edit}", value=current_tickers_str, height=250)
+    # We display just the tickers to prevent Yahoo Finance from rate-limiting/crashing the app.
+    # We will fetch the name only when validating a new replacement.
+    df_display = pd.DataFrame({
+        "Ticker Code": st.session_state['custom_tickers'][index_to_edit],
+        "Company Name": ["(Fetch on replacement)"] * len(st.session_state['custom_tickers'][index_to_edit])
+    })
+    st.dataframe(df_display, use_container_width=True, height=250)
     
-    if st.button(f"Save & Update {index_to_edit}"):
-        # Clean up the user input (remove spaces, handle newlines if they copy/paste weirdly)
-        raw_list = new_tickers_str.replace('\n', ',').split(',')
-        clean_list = [t.strip() for t in raw_list if t.strip()]
+    st.divider()
+    
+    # 3. Secure Update Section
+    st.subheader("🔒 Update a Ticker")
+    pwd = st.text_input("Enter password to unlock edit mode:", type="password")
+    
+    if pwd == "tyqbabi":
+        st.success("Access Granted.")
+        st.info("Select an outdated ticker below and enter the new one to replace it.")
         
-        # Update session state
-        st.session_state['custom_tickers'][index_to_edit] = clean_list
+        col_old, col_new = st.columns(2)
+        with col_old:
+            outdated_ticker = st.selectbox("Select Outdated Ticker:", st.session_state['custom_tickers'][index_to_edit])
         
-        # Clear cache so the old data is wiped and the charts recalculate with the new tickers
-        st.cache_data.clear()
-        
-        st.success(f"Successfully updated {index_to_edit} with {len(clean_list)} tickers! Head back to the Dashboard tab to see the changes.")
+        with col_new:
+            new_ticker = st.text_input("Enter New Ticker (e.g., 0001.HK):").strip().upper()
+            
+        if st.button("Validate & Replace Ticker"):
+            if not new_ticker:
+                st.warning("Please enter a new ticker.")
+            elif new_ticker == outdated_ticker:
+                st.warning("The new ticker is the same as the old one.")
+            else:
+                with st.spinner(f"Searching Yahoo Finance for '{new_ticker}'..."):
+                    is_valid, company_name = check_ticker_validity(new_ticker)
+                    
+                    if is_valid:
+                        st.success(f"✅ Found! {company_name} ({new_ticker})")
+                        
+                        # Find the old ticker and replace it
+                        ticker_list = st.session_state['custom_tickers'][index_to_edit]
+                        replace_index = ticker_list.index(outdated_ticker)
+                        ticker_list[replace_index] = new_ticker
+                        
+                        # --- TODO: ADD GOOGLE SHEETS SAVE LOGIC HERE LATER ---
+                        
+                        # Clear cache so charts update
+                        st.cache_data.clear()
+                        time.sleep(1.5) # Give the user time to read the success message
+                        st.rerun() 
+                    else:
+                        st.error(f"❌ Error: Could not find any trading data for '{new_ticker}'. Please check the symbol.")
