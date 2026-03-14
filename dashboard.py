@@ -146,9 +146,8 @@ def get_breadth_data(index_name, tickers):
         del data 
         gc.collect()
 
-        # FIX: Strip timezones from the index to prevent international markets from corrupting the dates
-        df_close.index = pd.to_datetime(df_close.index, utc=True).dt.date
-        df_close.index = pd.to_datetime(df_close.index) # Convert back to standard DatetimeIndex
+        # FIX: Safely strip timezones to prevent chart corruption
+        df_close.index = pd.to_datetime(df_close.index.strftime('%Y-%m-%d'))
 
         df_close = df_close.dropna(axis=1, how='all')
         if df_close.empty:
