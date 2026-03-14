@@ -111,7 +111,6 @@ def get_breadth_data(index_name, tickers):
             return None, None
 
         # 2. Bulletproof Close Price Extractor 
-        # This prevents yfinance from dumping Volume and High/Low prices into the math
         if isinstance(data.columns, pd.MultiIndex):
             if 'Close' in data.columns.get_level_values(0):
                 df_close = data['Close'].copy()
@@ -133,7 +132,7 @@ def get_breadth_data(index_name, tickers):
         df_close = df_close[~df_close.index.duplicated(keep='first')]
         df_close = df_close.sort_index()
 
-        # 4. Clean empty columns and rows
+        # 4. Clean empty columns and rows, and forward-fill missing prices
         df_close = df_close.apply(pd.to_numeric, errors='coerce')
         df_close = df_close.dropna(axis=1, how='all').dropna(axis=0, how='all')
         df_close = df_close.ffill()
@@ -146,16 +145,20 @@ def get_breadth_data(index_name, tickers):
         ma50 = df_close.rolling(window=50).mean()
         ma200 = df_close.rolling(window=200).mean()
 
-        # 6. Strict Daily Percentage Math
-        # We replace 0 with NaN so we don't divide by zero. 
-        # This allows Plotly to start the line on Day 20 instead of drawing false zeros.
-        count_20 = ma20.notna().sum(axis=1).replace(0, np.nan)
-        count_50 = ma50.notna().sum(axis=1).replace(0, np.nan)
-        count_200 = ma200.notna().sum(axis=1).replace(0, np.nan)
+        # 6. Strict Daily Percentage Math using .count()
+        # count() safely returns the number of non-NaN entries per row without needing replacements
+        count_20 = ma20.count(axis=1)
+        count_50 = ma50.count(axis=1)
+        count_200 = ma200.count(axis=1)
 
         above_20 = (df_close > ma20).sum(axis=1)
         above_50 = (df_close > ma50).sum(axis=1)
         above_200 = (df_close > ma200).sum(axis=1)
+
+        # 7. Require a minimum number of stocks to consider the day "valid"
+        # This naturally prevents Plotly from drawing false zeroes on the first 19 days
+        min_stocks = 5
+        valid_days = count_20 >= min_stocks
 
         # Build the final dataframe with exact percentages
         history_df = pd.DataFrame(index=df_close.index)
@@ -163,8 +166,8 @@ def get_breadth_data(index_name, tickers):
         history_df["% > MA50"] = (above_50 / count_50 * 100).round(2)
         history_df["% > MA200"] = (above_200 / count_200 * 100).round(2)
         
-        # Drop rows where we have absolutely no breadth data (the first 19 days)
-        history_df = history_df.dropna(how='all')
+        # Filter strictly for valid trading days
+        history_df = history_df[valid_days].dropna(how='all')
 
         if history_df.empty:
             return None, None
@@ -172,9 +175,9 @@ def get_breadth_data(index_name, tickers):
         # Get the latest Snapshot safely
         latest = {
             "Index": index_name,
-            "% > MA20": history_df["% > MA20"].dropna().iloc[-1] if not history_df["% > MA20"].isna().all() else 0,
-            "% > MA50": history_df["% > MA50"].dropna().iloc[-1] if not history_df["% > MA50"].isna().all() else 0,
-            "% > MA200": history_df["% > MA200"].dropna().iloc[-1] if not history_df["% > MA200"].isna().all() else 0
+            "% > MA20": history_df["% > MA20"].iloc[-1],
+            "% > MA50": history_df["% > MA50"].iloc[-1],
+            "% > MA200": history_df["% > MA200"].iloc[-1]
         }
         
         return latest, history_df
