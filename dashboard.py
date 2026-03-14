@@ -104,13 +104,13 @@ def get_breadth_data(index_name, tickers):
         return None, None
 
     try:
-        # 1. Download data (threads=False prevents the 10-minute rate-limit hangs)
+        # 1. Download data 
         data = yf.download(tickers, period="5y", progress=False, threads=False)
         
         if data.empty:
             return None, None
 
-        # 2. Extract Close Prices Safely
+        # 2. Extract Close Prices Safely (Kept from your new code to prevent crashes)
         if isinstance(data.columns, pd.MultiIndex):
             if 'Close' in data.columns.get_level_values(0):
                 df_close = data['Close'].copy()
@@ -129,7 +129,6 @@ def get_breadth_data(index_name, tickers):
         gc.collect()
 
         # 3. Clean Dates and Structure
-        # Safely convert to naive timezone to prevent indexing bugs in Plotly
         if df_close.index.tz is not None:
             df_close.index = df_close.index.tz_convert(None)
 
@@ -153,36 +152,29 @@ def get_breadth_data(index_name, tickers):
         ma50 = df_close.rolling(window=50).mean()
         ma200 = df_close.rolling(window=200).mean()
 
-        # 5. BUG FIX: SAFE PURE-NUMPY MATH
-        # By extracting .values, we strip Pandas of its indices. This forces
-        # a strict numerical division, which makes it mathematically impossible
-        # for the percentage to exceed 100 or accidentally plot row numbers.
-        
-        counts_20 = ma20.notna().sum(axis=1).values
-        counts_50 = ma50.notna().sum(axis=1).values
-        counts_200 = ma200.notna().sum(axis=1).values
+        # 5. RESTORED OLD PANDAS LOGIC
+        # We rely on pandas so the DatetimeIndex remains intact for Plotly
+        count_20 = ma20.count(axis=1)
+        count_50 = ma50.count(axis=1)
+        count_200 = ma200.count(axis=1)
 
-        above_20 = (df_close > ma20).sum(axis=1).values
-        above_50 = (df_close > ma50).sum(axis=1).values
-        above_200 = (df_close > ma200).sum(axis=1).values
+        above_20 = (df_close > ma20).sum(axis=1)
+        above_50 = (df_close > ma50).sum(axis=1)
+        above_200 = (df_close > ma200).sum(axis=1)
 
-        # Use np.where to divide only if counts > 0 (prevents division by zero errors)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            pct_20 = np.where(counts_20 > 0, (above_20 / counts_20) * 100, np.nan)
-            pct_50 = np.where(counts_50 > 0, (above_50 / counts_50) * 100, np.nan)
-            pct_200 = np.where(counts_200 > 0, (above_200 / counts_200) * 100, np.nan)
+        pct_20 = (above_20 / count_20 * 100)
+        pct_50 = (above_50 / count_50 * 100)
+        pct_200 = (above_200 / count_200 * 100)
 
-        # 6. Rebuild into Pandas safely
-        history_df = pd.DataFrame({
-            "% > MA20": pct_20,
-            "% > MA50": pct_50,
-            "% > MA200": pct_200
-        }, index=df_close.index)
-
-        # 7. Require minimum stocks and Clean
+        # 6. Rebuild into Pandas safely and clean
         min_stocks = 5
-        valid_days = counts_20 >= min_stocks
-        history_df = history_df[valid_days].dropna(how='all').round(2)
+        valid_days = count_20 >= min_stocks
+        
+        history_df = pd.DataFrame({
+            "% > MA20": pct_20[valid_days],
+            "% > MA50": pct_50[valid_days],
+            "% > MA200": pct_200[valid_days]
+        }).fillna(0)
 
         if history_df.empty:
             return None, None
@@ -190,9 +182,9 @@ def get_breadth_data(index_name, tickers):
         # Get the latest Snapshot 
         latest = {
             "Index": index_name,
-            "% > MA20": float(history_df["% > MA20"].iloc[-1]),
-            "% > MA50": float(history_df["% > MA50"].iloc[-1]),
-            "% > MA200": float(history_df["% > MA200"].iloc[-1])
+            "% > MA20": round(float(history_df["% > MA20"].iloc[-1]), 2),
+            "% > MA50": round(float(history_df["% > MA50"].iloc[-1]), 2),
+            "% > MA200": round(float(history_df["% > MA200"].iloc[-1]), 2)
         }
         
         return latest, history_df
