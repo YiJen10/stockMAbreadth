@@ -134,21 +134,33 @@ def get_breadth_data(index_name, tickers):
         return None, None
 
     try:
-        data = yf.download(tickers, period="5y", progress=False, threads=False)
+        # 1. Download data (Let yfinance handle default threading)
+        data = yf.download(tickers, period="5y", progress=False)
         
-        if isinstance(data, pd.Series):
-             df_close = data.to_frame()
-        elif 'Close' in data.columns:
+        # 2. Extract Close Prices Safely
+        if isinstance(data.columns, pd.MultiIndex):
              df_close = data['Close'].copy()
+        elif 'Close' in data.columns:
+             df_close = data[['Close']].copy()
+             # Ensure the column retains the ticker name if there's only 1 stock
+             if len(tickers) == 1:
+                 df_close.columns = [tickers[0]]
         else:
              df_close = data.copy()
 
+        # Free memory immediately
         del data 
         gc.collect()
 
-        # FIX: Safely strip timezones to prevent chart corruption
-        df_close.index = pd.to_datetime(df_close.index.strftime('%Y-%m-%d'))
+        # 3. FIX: Clean, deduplicate, and sort the index (CRITICAL FOR PLOTLY)
+        # Convert to UTC, remove timezone, and floor to midnight for perfect daily alignment
+        df_close.index = pd.to_datetime(df_close.index, utc=True).tz_localize(None).floor('D')
+        # Drop any duplicate dates caused by exchange adjustments
+        df_close = df_close[~df_close.index.duplicated(keep='last')]
+        # Explicitly sort chronologically so the line chart draws left-to-right properly
+        df_close = df_close.sort_index()
 
+        # 4. Clean empty columns and rows
         df_close = df_close.dropna(axis=1, how='all')
         if df_close.empty:
             return None, None
@@ -156,6 +168,7 @@ def get_breadth_data(index_name, tickers):
         df_close = df_close.dropna(axis=0, how='all')
         df_close = df_close.ffill()
 
+        # 5. Calculate MAs
         ma20 = df_close.rolling(window=20).mean()
         ma50 = df_close.rolling(window=50).mean()
         ma200 = df_close.rolling(window=200).mean()
@@ -172,7 +185,9 @@ def get_breadth_data(index_name, tickers):
         pct_50 = (above_50 / count_50 * 100)
         pct_200 = (above_200 / count_200 * 100)
 
-        min_stocks = 5
+        # 6. FIX: Dynamic Minimum Threshold
+        # Ensures the chart still draws even if yfinance failed to download the majority of the list
+        min_stocks = min(5, len(df_close.columns))
         valid_days = count_20 >= min_stocks
         
         history_df = pd.DataFrame({
@@ -181,11 +196,15 @@ def get_breadth_data(index_name, tickers):
             "% > MA200": pct_200[valid_days]
         }).fillna(0)
 
+        # Catch if the dataframe was completely filtered out
+        if history_df.empty:
+            return None, None
+
         latest = {
             "Index": index_name,
-            "% > MA20": round(history_df["% > MA20"].iloc[-1], 2) if not history_df.empty else 0,
-            "% > MA50": round(history_df["% > MA50"].iloc[-1], 2) if not history_df.empty else 0,
-            "% > MA200": round(history_df["% > MA200"].iloc[-1], 2) if not history_df.empty else 0
+            "% > MA20": round(history_df["% > MA20"].iloc[-1], 2),
+            "% > MA50": round(history_df["% > MA50"].iloc[-1], 2),
+            "% > MA200": round(history_df["% > MA200"].iloc[-1], 2)
         }
         
         return latest, history_df
