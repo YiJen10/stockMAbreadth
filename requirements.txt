@@ -4,3 +4,4 @@ pandas
 requests
 plotly
 st-gsheets-connection
+lxml

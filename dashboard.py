@@ -96,6 +96,37 @@ if 'custom_tickers' not in st.session_state:
         ]
     }
 
+# --- HELPER: CLEAN TICKERS ---
+def clean_us_ticker(ticker):
+    return str(ticker).replace(".", "-")
+
+# --- DATA FETCHING (US) ---
+@st.cache_data(ttl=86400)
+def get_sp500_tickers():
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        # Make the scraper look like a real browser to prevent Wikipedia blocks
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        response = requests.get(url, headers=headers)
+        df = pd.read_html(StringIO(response.text))[0]
+        return [clean_us_ticker(t) for t in df['Symbol'].tolist()]
+    except Exception as e:
+        return ["AAPL", "MSFT", "GOOGL"]
+
+@st.cache_data(ttl=86400)
+def get_nasdaq100_tickers():
+    try:
+        url = "https://en.wikipedia.org/wiki/Nasdaq-100"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        response = requests.get(url, headers=headers)
+        tables = pd.read_html(StringIO(response.text))
+        for table in tables:
+            if 'Ticker' in table.columns:
+                return [clean_us_ticker(t) for t in table['Ticker'].tolist()]
+        return ["AAPL", "MSFT", "NVDA"]
+    except Exception as e:
+        return ["AAPL", "MSFT", "NVDA"]
+
 # --- CALCULATION LOGIC (HOLIDAY AWARE) ---
 @st.cache_data(ttl=300)
 def get_breadth_data(index_name, tickers):
@@ -114,6 +145,10 @@ def get_breadth_data(index_name, tickers):
 
         del data 
         gc.collect()
+
+        # FIX: Strip timezones from the index to prevent international markets from corrupting the dates
+        df_close.index = pd.to_datetime(df_close.index, utc=True).dt.date
+        df_close.index = pd.to_datetime(df_close.index) # Convert back to standard DatetimeIndex
 
         df_close = df_close.dropna(axis=1, how='all')
         if df_close.empty:
