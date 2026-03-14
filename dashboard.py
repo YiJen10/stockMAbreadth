@@ -145,26 +145,32 @@ def get_breadth_data(index_name, tickers):
         ma50 = df_close.rolling(window=50).mean()
         ma200 = df_close.rolling(window=200).mean()
 
-        # 6. Strict Daily Percentage Math using .count()
-        # count() safely returns the number of non-NaN entries per row without needing replacements
-        count_20 = ma20.count(axis=1)
-        count_50 = ma50.count(axis=1)
-        count_200 = ma200.count(axis=1)
+        # 6. FOOLPROOF PERCENTAGE MATH using .mean()
+        # By converting True/False to floats, .mean(axis=1) automatically 
+        # gives us the exact ratio (e.g., 0.65). Multiply by 100 to get 65%.
+        # This completely bypasses the bugs caused by dividing row counts.
+        
+        above_20_mask = (df_close > ma20).astype(float)
+        above_20_mask[ma20.isna()] = np.nan # Ignore stocks without MA data yet
+        pct_20 = above_20_mask.mean(axis=1) * 100
 
-        above_20 = (df_close > ma20).sum(axis=1)
-        above_50 = (df_close > ma50).sum(axis=1)
-        above_200 = (df_close > ma200).sum(axis=1)
+        above_50_mask = (df_close > ma50).astype(float)
+        above_50_mask[ma50.isna()] = np.nan
+        pct_50 = above_50_mask.mean(axis=1) * 100
 
-        # 7. Require a minimum number of stocks to consider the day "valid"
-        # This naturally prevents Plotly from drawing false zeroes on the first 19 days
+        above_200_mask = (df_close > ma200).astype(float)
+        above_200_mask[ma200.isna()] = np.nan
+        pct_200 = above_200_mask.mean(axis=1) * 100
+
+        # 7. Require a minimum number of valid stocks to consider the day "Open"
         min_stocks = 5
-        valid_days = count_20 >= min_stocks
+        valid_days = ma20.notna().sum(axis=1) >= min_stocks
 
-        # Build the final dataframe with exact percentages
+        # Build the final dataframe
         history_df = pd.DataFrame(index=df_close.index)
-        history_df["% > MA20"] = (above_20 / count_20 * 100).round(2)
-        history_df["% > MA50"] = (above_50 / count_50 * 100).round(2)
-        history_df["% > MA200"] = (above_200 / count_200 * 100).round(2)
+        history_df["% > MA20"] = pct_20.round(2)
+        history_df["% > MA50"] = pct_50.round(2)
+        history_df["% > MA200"] = pct_200.round(2)
         
         # Filter strictly for valid trading days
         history_df = history_df[valid_days].dropna(how='all')
