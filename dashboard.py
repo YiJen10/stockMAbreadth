@@ -1,13 +1,13 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np # NEW: For safe math calculations
+import numpy as np 
 import requests
 import time
 from io import StringIO
 import plotly.graph_objects as go 
 import gc 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Market Breadth Dashboard")
@@ -21,7 +21,7 @@ def clean_us_ticker(ticker):
 def get_sp500_tickers():
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         response = requests.get(url, headers=headers)
         df = pd.read_html(StringIO(response.text))[0]
         return [clean_us_ticker(t) for t in df['Symbol'].tolist()]
@@ -104,8 +104,9 @@ def get_breadth_data(index_name, tickers):
         return None, None
 
     try:
-        # 1. Download data (Threads enabled for speed)
-        data = yf.download(tickers, period="5y", progress=False, threads=True)
+        # FIX 1: Set threads=False. Yahoo Finance blocks thousands of concurrent requests.
+        # Running synchronously stops the 10-minute hanging issues.
+        data = yf.download(tickers, period="5y", progress=False, threads=False)
         
         if data.empty:
             return None, None
@@ -118,10 +119,17 @@ def get_breadth_data(index_name, tickers):
                 df_close = data.xs('Close', level=1, axis=1).copy()
             else:
                 return None, None
-        elif 'Close' in data.columns:
-            df_close = data[['Close']].copy()
         else:
-            return None, None
+            if 'Close' in data.columns:
+                df_close = data[['Close']].copy() # Double brackets force DataFrame
+            else:
+                return None, None
+
+        # FIX 2: Prevent the "1236 row count" bug. 
+        # If rate-limiting happens and Yahoo returns only 1 stock, Pandas might make it a 1D Series.
+        # This forces it back into a DataFrame so axis=1 math never breaks.
+        if isinstance(df_close, pd.Series):
+            df_close = df_close.to_frame()
 
         # Free memory immediately
         del data 
@@ -146,12 +154,8 @@ def get_breadth_data(index_name, tickers):
         ma200 = df_close.rolling(window=200).mean()
 
         # 6. FOOLPROOF PERCENTAGE MATH using .mean()
-        # By converting True/False to floats, .mean(axis=1) automatically 
-        # gives us the exact ratio (e.g., 0.65). Multiply by 100 to get 65%.
-        # This completely bypasses the bugs caused by dividing row counts.
-        
         above_20_mask = (df_close > ma20).astype(float)
-        above_20_mask[ma20.isna()] = np.nan # Ignore stocks without MA data yet
+        above_20_mask[ma20.isna()] = np.nan
         pct_20 = above_20_mask.mean(axis=1) * 100
 
         above_50_mask = (df_close > ma50).astype(float)
@@ -206,7 +210,9 @@ def check_ticker_validity(ticker_symbol):
 
 # --- MAIN APP ---
 st.title("📊 Live Market Breadth Dashboard")
-myt_time = (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
+
+# FIX 3: Fixed the Streamlit log spam regarding datetime warnings
+myt_time = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
 st.write(f"Last Updated: {myt_time} (MYT)")
 
 # Create Tabs
