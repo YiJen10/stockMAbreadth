@@ -133,9 +133,19 @@ def get_breadth_data(index_name, tickers):
         gc.collect()
 
         # 3. Clean Dates and Structure
-        df_close.index = pd.to_datetime(df_close.index, utc=True).tz_localize(None).normalize()
-        df_close = df_close[~df_close.index.duplicated(keep='first')].sort_index()
-        df_close = df_close.apply(pd.to_numeric, errors='coerce').dropna(axis=1, how='all').dropna(axis=0, how='all')
+        df_close.index = pd.to_datetime(df_close.index).tz_localize(None)
+
+        df_close = df_close[~df_close.index.duplicated(keep='first')]
+        df_close = df_close.sort_index()
+
+        df_close = (
+            df_close
+            .apply(pd.to_numeric, errors='coerce')
+            .dropna(axis=1, how='all')   # remove dead tickers
+            .dropna(axis=0, how='all')   # remove holidays
+        )
+
+        # Forward fill suspended stocks
         df_close = df_close.ffill()
 
         if df_close.empty:
