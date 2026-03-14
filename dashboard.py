@@ -141,43 +141,37 @@ def get_breadth_data(index_name, tickers):
         if df_close.empty:
             return None, None
 
-        # 4. PURE NUMPY CALCULATION (Prevents the 1236 row-counting bug)
-        close_arr = df_close.values
-        
-        def calculate_numpy_breadth(arr, window):
-            # Calculate rolling mean using Pandas, but immediately extract raw numpy array
-            ma_arr = df_close.rolling(window=window).mean().values
-            
-            # Find where stocks are above their MA (Booleans: True/False)
-            above_ma = (arr > ma_arr)
-            
-            # Count how many stocks actually have MA data on a given day
-            valid_stocks = ~np.isnan(ma_arr)
-            count_valid = np.sum(valid_stocks, axis=1)
-            
-            # Prepare an array for percentages, defaulted to 0
-            pct = np.zeros(len(arr))
-            
-            # Only divide where count_valid > 0 to prevent division by zero
-            mask = count_valid > 0
-            # Sum the True values horizontally, divide by valid stock count, multiply by 100
-            pct[mask] = (np.sum(above_ma[mask] & valid_stocks[mask], axis=1) / count_valid[mask]) * 100
-            
-            return pct, count_valid
+        # 4. Calculate Moving Averages
+        ma20 = df_close.rolling(window=20).mean()
+        ma50 = df_close.rolling(window=50).mean()
+        ma200 = df_close.rolling(window=200).mean()
 
-        pct_20, count_20 = calculate_numpy_breadth(close_arr, 20)
-        pct_50, count_50 = calculate_numpy_breadth(close_arr, 50)
-        pct_200, count_200 = calculate_numpy_breadth(close_arr, 200)
+        # 5. Count valid stocks each day
+        count_20 = ma20.count(axis=1)
+        count_50 = ma50.count(axis=1)
+        count_200 = ma200.count(axis=1)
 
-        # 5. Require a minimum number of valid stocks to consider the day "Open"
+        # 6. Count stocks above MA
+        above_20 = (df_close > ma20).sum(axis=1)
+        above_50 = (df_close > ma50).sum(axis=1)
+        above_200 = (df_close > ma200).sum(axis=1)
+
+        # 7. Convert to percentages
+        pct_20 = (above_20 / count_20) * 100
+        pct_50 = (above_50 / count_50) * 100
+        pct_200 = (above_200 / count_200) * 100
+
+        # 8. Require minimum stocks
         min_stocks = 5
         valid_days = count_20 >= min_stocks
 
-        # 6. Build the final dataframe safely
-        history_df = pd.DataFrame(index=df_close.index)
-        history_df["% > MA20"] = pct_20
-        history_df["% > MA50"] = pct_50
-        history_df["% > MA200"] = pct_200
+        history_df = pd.DataFrame({
+            "% > MA20": pct_20,
+            "% > MA50": pct_50,
+            "% > MA200": pct_200
+        })
+
+        history_df = history_df[valid_days].round(2)
         
         # Filter strictly for valid trading days and round
         history_df = history_df[valid_days].dropna(how='all').round(2)
