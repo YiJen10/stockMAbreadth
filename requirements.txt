@@ -3,5 +3,4 @@ yfinance>=0.2.37
 pandas
 requests
 plotly
-st-gsheets-connection
 lxml
