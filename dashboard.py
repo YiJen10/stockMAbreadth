@@ -124,19 +124,16 @@ def get_breadth_data(index_name, tickers):
             else:
                 return None, None
 
-        # Force back to DataFrame if it collapsed into a Series
-        if isinstance(df_close, pd.Series):
-            df_close = df_close.to_frame()
-
         # Free memory immediately
         del data 
         gc.collect()
 
         # 3. Clean Dates and Structure
-        df_close.index = pd.to_datetime(df_close.index).tz_localize(None)
+        # Safely convert to naive timezone to prevent indexing bugs in Plotly
+        if df_close.index.tz is not None:
+            df_close.index = df_close.index.tz_convert(None)
 
-        df_close = df_close[~df_close.index.duplicated(keep='first')]
-        df_close = df_close.sort_index()
+        df_close = df_close[~df_close.index.duplicated(keep='first')].sort_index()
 
         df_close = (
             df_close
@@ -156,34 +153,35 @@ def get_breadth_data(index_name, tickers):
         ma50 = df_close.rolling(window=50).mean()
         ma200 = df_close.rolling(window=200).mean()
 
-        # 5. Count valid stocks each day
-        count_20 = ma20.count(axis=1)
-        count_50 = ma50.count(axis=1)
-        count_200 = ma200.count(axis=1)
+        # 5. BUG FIX: SAFE PURE-NUMPY MATH
+        # By extracting .values, we strip Pandas of its indices. This forces
+        # a strict numerical division, which makes it mathematically impossible
+        # for the percentage to exceed 100 or accidentally plot row numbers.
+        
+        counts_20 = ma20.notna().sum(axis=1).values
+        counts_50 = ma50.notna().sum(axis=1).values
+        counts_200 = ma200.notna().sum(axis=1).values
 
-        # 6. Count stocks above MA
-        above_20 = (df_close > ma20).sum(axis=1)
-        above_50 = (df_close > ma50).sum(axis=1)
-        above_200 = (df_close > ma200).sum(axis=1)
+        above_20 = (df_close > ma20).sum(axis=1).values
+        above_50 = (df_close > ma50).sum(axis=1).values
+        above_200 = (df_close > ma200).sum(axis=1).values
 
-        # 7. Convert to percentages
-        pct_20 = (above_20 / count_20) * 100
-        pct_50 = (above_50 / count_50) * 100
-        pct_200 = (above_200 / count_200) * 100
+        # Use np.where to divide only if counts > 0 (prevents division by zero errors)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            pct_20 = np.where(counts_20 > 0, (above_20 / counts_20) * 100, np.nan)
+            pct_50 = np.where(counts_50 > 0, (above_50 / counts_50) * 100, np.nan)
+            pct_200 = np.where(counts_200 > 0, (above_200 / counts_200) * 100, np.nan)
 
-        # 8. Require minimum stocks
-        min_stocks = 5
-        valid_days = count_20 >= min_stocks
-
+        # 6. Rebuild into Pandas safely
         history_df = pd.DataFrame({
             "% > MA20": pct_20,
             "% > MA50": pct_50,
             "% > MA200": pct_200
-        })
+        }, index=df_close.index)
 
-        history_df = history_df[valid_days].round(2)
-        
-        # Filter strictly for valid trading days and round
+        # 7. Require minimum stocks and Clean
+        min_stocks = 5
+        valid_days = counts_20 >= min_stocks
         history_df = history_df[valid_days].dropna(how='all').round(2)
 
         if history_df.empty:
@@ -218,7 +216,6 @@ def check_ticker_validity(ticker_symbol):
 # --- MAIN APP ---
 st.title("📊 Live Market Breadth Dashboard")
 
-# FIX 3: Fixed the Streamlit log spam regarding datetime warnings
 myt_time = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
 st.write(f"Last Updated: {myt_time} (MYT)")
 
