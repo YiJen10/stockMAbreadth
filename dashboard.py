@@ -6,6 +6,7 @@ import time
 from io import StringIO
 import plotly.graph_objects as go # NEW: For interactive charts
 import gc # NEW: Import garbage collector to manage memory
+from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Market Breadth Dashboard")
@@ -189,7 +190,9 @@ def get_breadth_data(index_name, tickers):
 
 # --- MAIN APP ---
 st.title("📊 Live Market Breadth Dashboard")
-st.write(f"Last Updated: {time.strftime('%H:%M:%S')}")
+# Force Malaysia Time (UTC +8)
+myt_time = (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
+st.write(f"Last Updated: {myt_time} (MYT)")
 
 if st.button('Refresh Data Now'):
     st.cache_data.clear()
