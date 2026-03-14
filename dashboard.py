@@ -5,6 +5,7 @@ import requests
 import time
 from io import StringIO
 import plotly.graph_objects as go # NEW: For interactive charts
+import gc # NEW: Import garbage collector to manage memory
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Market Breadth Dashboard")
@@ -112,16 +113,22 @@ def get_breadth_data(index_name, tickers):
     try:
         # 1. Download 5 years data (max history for free tier is usually decent)
         # We grab only 'Close' to keep it light
-        data = yf.download(tickers, period="5y", group_by='column', progress=False, threads=True)
+        # Download data with threads=False to prevent memory spikes on Streamlit Cloud
+        data = yf.download(tickers, period="5y", progress=False, threads=False)
         
-        # 2. Extract Close Prices Safely
+        # 2. Extract Close Prices Safely and IMMEDIATELY free memory
         if isinstance(data, pd.Series):
              df_close = data.to_frame()
         elif 'Close' in data.columns:
-             df_close = data['Close']
+             # Use .copy() so we can delete the massive original 'data' object
+             df_close = data['Close'].copy
         else:
-             df_close = data 
-             
+             df_close = data.copy() # Fallback if structure is unexpected
+
+        # Force delete the massive original dataframe to save RAM
+        del data 
+        gc.collect()
+
         # Drop tickers that failed (dead stocks)
         df_close = df_close.dropna(axis=1, how='all')
         
