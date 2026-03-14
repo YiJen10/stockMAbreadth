@@ -255,10 +255,18 @@ def get_breadth_data(index_name, tickers):
 
 
         # Force delete the massive original dataframe to save RAM
-
         del data
-
         gc.collect()
+
+        # Drop tickers that failed (dead stocks)
+        df_close = df_close.dropna(axis=1, how='all')
+        
+        # ADD THIS FIX: Strip timezone data so Plotly can read the dates properly
+        if df_close.index.tz is not None:
+            df_close.index = df_close.index.tz_convert(None)
+
+        if df_close.empty:
+            return None, None
 
 
 
