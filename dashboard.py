@@ -104,14 +104,13 @@ def get_breadth_data(index_name, tickers):
         return None, None
 
     try:
-        # FIX 1: Set threads=False. Yahoo Finance blocks thousands of concurrent requests.
-        # Running synchronously stops the 10-minute hanging issues.
+        # 1. Download data (threads=False prevents the 10-minute rate-limit hangs)
         data = yf.download(tickers, period="5y", progress=False, threads=False)
         
         if data.empty:
             return None, None
 
-        # 2. Bulletproof Close Price Extractor 
+        # 2. Extract Close Prices Safely
         if isinstance(data.columns, pd.MultiIndex):
             if 'Close' in data.columns.get_level_values(0):
                 df_close = data['Close'].copy()
@@ -121,13 +120,11 @@ def get_breadth_data(index_name, tickers):
                 return None, None
         else:
             if 'Close' in data.columns:
-                df_close = data[['Close']].copy() # Double brackets force DataFrame
+                df_close = data[['Close']].copy()
             else:
                 return None, None
 
-        # FIX 2: Prevent the "1236 row count" bug. 
-        # If rate-limiting happens and Yahoo returns only 1 stock, Pandas might make it a 1D Series.
-        # This forces it back into a DataFrame so axis=1 math never breaks.
+        # Force back to DataFrame if it collapsed into a Series
         if isinstance(df_close, pd.Series):
             df_close = df_close.to_frame()
 
@@ -135,59 +132,65 @@ def get_breadth_data(index_name, tickers):
         del data 
         gc.collect()
 
-        # 3. Safely format Dates and Drop Duplicates
+        # 3. Clean Dates and Structure
         df_close.index = pd.to_datetime(df_close.index, utc=True).tz_localize(None).normalize()
-        df_close = df_close[~df_close.index.duplicated(keep='first')]
-        df_close = df_close.sort_index()
-
-        # 4. Clean empty columns and rows, and forward-fill missing prices
-        df_close = df_close.apply(pd.to_numeric, errors='coerce')
-        df_close = df_close.dropna(axis=1, how='all').dropna(axis=0, how='all')
+        df_close = df_close[~df_close.index.duplicated(keep='first')].sort_index()
+        df_close = df_close.apply(pd.to_numeric, errors='coerce').dropna(axis=1, how='all').dropna(axis=0, how='all')
         df_close = df_close.ffill()
 
         if df_close.empty:
             return None, None
 
-        # 5. Calculate MAs 
-        ma20 = df_close.rolling(window=20).mean()
-        ma50 = df_close.rolling(window=50).mean()
-        ma200 = df_close.rolling(window=200).mean()
-
-        # 6. FOOLPROOF PERCENTAGE MATH using .mean()
-        above_20_mask = (df_close > ma20).astype(float)
-        above_20_mask[ma20.isna()] = np.nan
-        pct_20 = above_20_mask.mean(axis=1) * 100
-
-        above_50_mask = (df_close > ma50).astype(float)
-        above_50_mask[ma50.isna()] = np.nan
-        pct_50 = above_50_mask.mean(axis=1) * 100
-
-        above_200_mask = (df_close > ma200).astype(float)
-        above_200_mask[ma200.isna()] = np.nan
-        pct_200 = above_200_mask.mean(axis=1) * 100
-
-        # 7. Require a minimum number of valid stocks to consider the day "Open"
-        min_stocks = 5
-        valid_days = ma20.notna().sum(axis=1) >= min_stocks
-
-        # Build the final dataframe
-        history_df = pd.DataFrame(index=df_close.index)
-        history_df["% > MA20"] = pct_20.round(2)
-        history_df["% > MA50"] = pct_50.round(2)
-        history_df["% > MA200"] = pct_200.round(2)
+        # 4. PURE NUMPY CALCULATION (Prevents the 1236 row-counting bug)
+        close_arr = df_close.values
         
-        # Filter strictly for valid trading days
-        history_df = history_df[valid_days].dropna(how='all')
+        def calculate_numpy_breadth(arr, window):
+            # Calculate rolling mean using Pandas, but immediately extract raw numpy array
+            ma_arr = df_close.rolling(window=window).mean().values
+            
+            # Find where stocks are above their MA (Booleans: True/False)
+            above_ma = (arr > ma_arr)
+            
+            # Count how many stocks actually have MA data on a given day
+            valid_stocks = ~np.isnan(ma_arr)
+            count_valid = np.sum(valid_stocks, axis=1)
+            
+            # Prepare an array for percentages, defaulted to 0
+            pct = np.zeros(len(arr))
+            
+            # Only divide where count_valid > 0 to prevent division by zero
+            mask = count_valid > 0
+            # Sum the True values horizontally, divide by valid stock count, multiply by 100
+            pct[mask] = (np.sum(above_ma[mask] & valid_stocks[mask], axis=1) / count_valid[mask]) * 100
+            
+            return pct, count_valid
+
+        pct_20, count_20 = calculate_numpy_breadth(close_arr, 20)
+        pct_50, count_50 = calculate_numpy_breadth(close_arr, 50)
+        pct_200, count_200 = calculate_numpy_breadth(close_arr, 200)
+
+        # 5. Require a minimum number of valid stocks to consider the day "Open"
+        min_stocks = 5
+        valid_days = count_20 >= min_stocks
+
+        # 6. Build the final dataframe safely
+        history_df = pd.DataFrame(index=df_close.index)
+        history_df["% > MA20"] = pct_20
+        history_df["% > MA50"] = pct_50
+        history_df["% > MA200"] = pct_200
+        
+        # Filter strictly for valid trading days and round
+        history_df = history_df[valid_days].dropna(how='all').round(2)
 
         if history_df.empty:
             return None, None
 
-        # Get the latest Snapshot safely
+        # Get the latest Snapshot 
         latest = {
             "Index": index_name,
-            "% > MA20": history_df["% > MA20"].iloc[-1],
-            "% > MA50": history_df["% > MA50"].iloc[-1],
-            "% > MA200": history_df["% > MA200"].iloc[-1]
+            "% > MA20": float(history_df["% > MA20"].iloc[-1]),
+            "% > MA50": float(history_df["% > MA50"].iloc[-1]),
+            "% > MA200": float(history_df["% > MA200"].iloc[-1])
         }
         
         return latest, history_df
