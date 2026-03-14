@@ -4,8 +4,8 @@ import pandas as pd
 import requests
 import time
 from io import StringIO
-import plotly.graph_objects as go # NEW: For interactive charts
-import gc # NEW: Import garbage collector to manage memory
+import plotly.graph_objects as go 
+import gc 
 from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
@@ -103,51 +103,33 @@ def get_breadth_data(index_name, tickers):
         return None, None
 
     try:
-        # 1. Download 5 years data (max history for free tier is usually decent)
-        # We grab only 'Close' to keep it light
-        # Download data with threads=False to prevent memory spikes on Streamlit Cloud
         data = yf.download(tickers, period="5y", progress=False, threads=False)
         
-        # 2. Extract Close Prices Safely and IMMEDIATELY free memory
         if isinstance(data, pd.Series):
              df_close = data.to_frame()
         elif 'Close' in data.columns:
-             # Use .copy() so we can delete the massive original 'data' object
              df_close = data['Close'].copy()
         else:
-             df_close = data.copy() # Fallback if structure is unexpected
+             df_close = data.copy()
 
-        # Force delete the massive original dataframe to save RAM
         del data 
         gc.collect()
 
-        # Drop tickers that failed (dead stocks)
         df_close = df_close.dropna(axis=1, how='all')
-        
         if df_close.empty:
             return None, None
 
-        # 3. HOLIDAY FILTERING
-        # If a row has all NaNs, it means the market was closed (Holiday/Weekend).
-        # We drop these rows so the chart continuity remains correct.
         df_close = df_close.dropna(axis=0, how='all')
-
-        # 4. Handle Suspensions (Forward Fill)
-        # If market was open but 1 specific stock didn't trade, carry forward yesterday's price.
         df_close = df_close.ffill()
 
-        # 5. Calculate MAs
         ma20 = df_close.rolling(window=20).mean()
         ma50 = df_close.rolling(window=50).mean()
         ma200 = df_close.rolling(window=200).mean()
 
-        # 6. Calculate Breadth
-        # Dynamic denominator: How many stocks existed on that specific day?
         count_20 = ma20.count(axis=1)
         count_50 = ma50.count(axis=1)
         count_200 = ma200.count(axis=1)
 
-        # Numerator
         above_20 = (df_close > ma20).sum(axis=1)
         above_50 = (df_close > ma50).sum(axis=1)
         above_200 = (df_close > ma200).sum(axis=1)
@@ -156,8 +138,6 @@ def get_breadth_data(index_name, tickers):
         pct_50 = (above_50 / count_50 * 100)
         pct_200 = (above_200 / count_200 * 100)
 
-        # 7. Final Clean: Drop days where insufficient data exists (e.g. glitches)
-        # We require at least 5 stocks to have valid data to count the day as "Open"
         min_stocks = 5
         valid_days = count_20 >= min_stocks
         
@@ -179,6 +159,19 @@ def get_breadth_data(index_name, tickers):
     except Exception as e:
         return None, None
 
+# --- HELPER: VALIDATE TICKER ---
+def check_ticker_validity(ticker_symbol):
+    try:
+        test_data = yf.download(ticker_symbol, period="1d", progress=False)
+        if test_data.empty:
+            return False, None
+            
+        tkr = yf.Ticker(ticker_symbol)
+        name = tkr.info.get('shortName', 'Name Not Available')
+        return True, name
+    except:
+        return False, None
+
 # --- MAIN APP ---
 st.title("📊 Live Market Breadth Dashboard")
 myt_time = (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
@@ -196,7 +189,6 @@ with tab1:
         sp500_list = get_sp500_tickers()
         ndx_list = get_nasdaq100_tickers()
 
-    # Build the dictionary using the dynamically updated session_state
     constituents = {
         "S&P 500 (SPX)": sp500_list,
         "Nasdaq 100 (NDX)": ndx_list,
@@ -207,7 +199,7 @@ with tab1:
         "MYX: Plantation": st.session_state['custom_tickers']["MYX: Plantation"]
     }
 
-    # 1. PROCESS ALL DATA
+    # PROCESS ALL DATA
     table_data = []
     history_data = {}
 
@@ -224,7 +216,7 @@ with tab1:
 
     progress_bar.empty()
 
-    # 2. DISPLAY TABLE
+    # DISPLAY TABLE
     if table_data:
         df_table = pd.DataFrame(table_data)
 
@@ -243,7 +235,7 @@ with tab1:
     else:
         st.error("No data available.")
 
-    # 3. DISPLAY INTERACTIVE CHART (PLOTLY)
+    # DISPLAY INTERACTIVE CHART (PLOTLY)
     st.divider()
     st.subheader("📈 Historical Market Breadth Chart")
 
@@ -251,7 +243,6 @@ with tab1:
 
     with col1:
         selected_index = st.selectbox("Select Index:", list(constituents.keys()))
-        
         show_ma20 = st.checkbox("% > MA20", value=False)
         show_ma50 = st.checkbox("% > MA50", value=True) 
         show_ma200 = st.checkbox("% > MA200", value=False)
@@ -261,16 +252,12 @@ with tab1:
             df_chart = history_data[selected_index]
             
             fig = go.Figure()
-
             if show_ma20:
-                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["% > MA20"], 
-                                         mode='lines', name='% > MA20', line=dict(color='blue')))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["% > MA20"], mode='lines', name='% > MA20', line=dict(color='blue')))
             if show_ma50:
-                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["% > MA50"], 
-                                         mode='lines', name='% > MA50', line=dict(color='red')))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["% > MA50"], mode='lines', name='% > MA50', line=dict(color='red')))
             if show_ma200:
-                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["% > MA200"], 
-                                         mode='lines', name='% > MA200', line=dict(color='green')))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart["% > MA200"], mode='lines', name='% > MA200', line=dict(color='green')))
 
             fig.update_layout(
                 title=f"{selected_index} Breadth History",
@@ -296,35 +283,15 @@ with tab1:
         else:
             st.warning("Data not available for this index.")
 
-# --- HELPER: VALIDATE TICKER ---
-def check_ticker_validity(ticker_symbol):
-    """Checks if a ticker exists and returns its company name if found."""
-    try:
-        # Download 1 day of data to confirm it actually trades
-        test_data = yf.download(ticker_symbol, period="1d", progress=False)
-        if test_data.empty:
-            return False, None
-            
-        # Try to fetch the short name
-        tkr = yf.Ticker(ticker_symbol)
-        name = tkr.info.get('shortName', 'Name Not Available')
-        return True, name
-    except:
-        return False, None
-
 # --- TICKER MANAGEMENT TAB ---
 with tab2:
     st.subheader("Manage Non-US Index Tickers")
     
-    # 1. Select Index to View
     editable_indices = list(st.session_state['custom_tickers'].keys())
     index_to_edit = st.selectbox("Select Index to view/modify:", editable_indices)
     
-    # 2. Display Current List
     st.write(f"**Current Constituents: {index_to_edit} ({len(st.session_state['custom_tickers'][index_to_edit])} stocks)**")
     
-    # We display just the tickers to prevent Yahoo Finance from rate-limiting/crashing the app.
-    # We will fetch the name only when validating a new replacement.
     df_display = pd.DataFrame({
         "Ticker Code": st.session_state['custom_tickers'][index_to_edit],
         "Company Name": ["(Fetch on replacement)"] * len(st.session_state['custom_tickers'][index_to_edit])
@@ -333,7 +300,6 @@ with tab2:
     
     st.divider()
     
-    # 3. Secure Update Section
     st.subheader("🔒 Update a Ticker")
     pwd = st.text_input("Enter password to unlock edit mode:", type="password")
     
@@ -360,16 +326,12 @@ with tab2:
                     if is_valid:
                         st.success(f"✅ Found! {company_name} ({new_ticker})")
                         
-                        # Find the old ticker and replace it
                         ticker_list = st.session_state['custom_tickers'][index_to_edit]
                         replace_index = ticker_list.index(outdated_ticker)
                         ticker_list[replace_index] = new_ticker
                         
-                        # --- TODO: ADD GOOGLE SHEETS SAVE LOGIC HERE LATER ---
-                        
-                        # Clear cache so charts update
                         st.cache_data.clear()
-                        time.sleep(1.5) # Give the user time to read the success message
+                        time.sleep(1.5) 
                         st.rerun() 
                     else:
                         st.error(f"❌ Error: Could not find any trading data for '{new_ticker}'. Please check the symbol.")
