@@ -104,14 +104,10 @@ def get_breadth_data(index_name, tickers):
         return None, None
 
     try:
-        # 1. Download data (Threads enabled for speed)
+        # 1. Download data
         data = yf.download(tickers, period="5y", progress=False, threads=True)
         
-        if data.empty:
-            return None, None
-
-        # 2. BULLETPROOF Close Price Extractor 
-        # Prevents yfinance from dumping Volume and High/Low prices into the math
+        # 2. Extract strictly the 'Close' prices to prevent Volume/High/Low from creeping in
         if isinstance(data.columns, pd.MultiIndex):
             if 'Close' in data.columns.get_level_values(0):
                 df_close = data['Close'].copy()
@@ -124,13 +120,14 @@ def get_breadth_data(index_name, tickers):
             if len(tickers) == 1:
                 df_close.columns = [tickers[0]]
         else:
-            return None, None
+            df_close = data.copy()
 
         # Free memory immediately
         del data 
         gc.collect()
 
-        # 3. Safely format Dates and Drop Duplicates
+        # 3. FIX: Strip timezones and explicitly drop duplicate dates 
+        # (This prevents Pandas from accidentally summing up the row lengths)
         df_close.index = pd.to_datetime(df_close.index, utc=True).tz_localize(None)
         df_close = df_close.sort_index()
         df_close = df_close[~df_close.index.duplicated(keep='last')]
@@ -144,52 +141,48 @@ def get_breadth_data(index_name, tickers):
         if df_close.empty:
             return None, None
 
-        # 5. Calculate MAs
+        # 5. Calculate MAs safely
         ma20 = df_close.rolling(window=20).mean()
         ma50 = df_close.rolling(window=50).mean()
         ma200 = df_close.rolling(window=200).mean()
 
-        # Count strictly how many stocks have a VALID Moving Average today
+        # Count how many stocks actually have a valid moving average today
         count_20 = ma20.notna().sum(axis=1)
         count_50 = ma50.notna().sum(axis=1)
         count_200 = ma200.notna().sum(axis=1)
 
-        # Count how many are above
+        # Count how many are above the MA (Strict Boolean evaluation)
         above_20 = (df_close > ma20).sum(axis=1)
         above_50 = (df_close > ma50).sum(axis=1)
         above_200 = (df_close > ma200).sum(axis=1)
 
-        # Calculate percentages safely (fill with NaN so Plotly doesn't draw zero-lines)
-        pct_20 = np.where(count_20 > 0, (above_20 / count_20) * 100, np.nan)
-        pct_50 = np.where(count_50 > 0, (above_50 / count_50) * 100, np.nan)
-        pct_200 = np.where(count_200 > 0, (above_200 / count_200) * 100, np.nan)
+        # 6. FIX: Calculate percentages, force them to be floats, and strictly cap at 100%
+        pct_20 = (above_20 / count_20 * 100).fillna(0).astype(float).clip(0, 100)
+        pct_50 = (above_50 / count_50 * 100).fillna(0).astype(float).clip(0, 100)
+        pct_200 = (above_200 / count_200 * 100).fillna(0).astype(float).clip(0, 100)
 
-        # 6. Apply Dynamic Threshold
+        # 7. Apply Dynamic Threshold
         min_stocks = min(5, len(df_close.columns))
         valid_days = count_20 >= min_stocks
         
+        # Build the final dataframe
         history_df = pd.DataFrame(index=df_close.index)
         history_df["% > MA20"] = pct_20
         history_df["% > MA50"] = pct_50
         history_df["% > MA200"] = pct_200
         
-        # Apply the valid days mask and drop entirely empty rows
-        history_df = history_df[valid_days]
-        history_df = history_df.dropna(how='all')
+        # Only keep the valid days and drop entirely empty rows
+        history_df = history_df[valid_days].dropna(how='all')
 
         if history_df.empty:
             return None, None
 
-        # Safely grab the latest valid number for the snapshot table
-        val_20 = history_df["% > MA20"].dropna().iloc[-1] if not history_df["% > MA20"].dropna().empty else 0
-        val_50 = history_df["% > MA50"].dropna().iloc[-1] if not history_df["% > MA50"].dropna().empty else 0
-        val_200 = history_df["% > MA200"].dropna().iloc[-1] if not history_df["% > MA200"].dropna().empty else 0
-
+        # Get the latest Snapshot
         latest = {
             "Index": index_name,
-            "% > MA20": round(val_20, 2),
-            "% > MA50": round(val_50, 2),
-            "% > MA200": round(val_200, 2)
+            "% > MA20": round(history_df["% > MA20"].iloc[-1], 2),
+            "% > MA50": round(history_df["% > MA50"].iloc[-1], 2),
+            "% > MA200": round(history_df["% > MA200"].iloc[-1], 2)
         }
         
         return latest, history_df
