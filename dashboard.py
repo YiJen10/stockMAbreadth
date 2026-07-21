@@ -17,6 +17,17 @@ def clean_us_ticker(ticker):
 
 # --- DATA FETCHING (US) ---
 @st.cache_data(ttl=86400)
+def get_sp500_tickers():
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers)
+        df = pd.read_html(StringIO(response.text))[0]
+        return [clean_us_ticker(t) for t in df['Symbol'].tolist()]
+    except:
+        return ["AAPL", "MSFT", "GOOGL"]
+
+@st.cache_data(ttl=86400)
 def get_nasdaq100_tickers():
     try:
         # FIX 1: Updated URL to the new Wikipedia constituent list
@@ -28,25 +39,11 @@ def get_nasdaq100_tickers():
             if 'Ticker' in table.columns:
                 return [clean_us_ticker(t) for t in table['Ticker'].tolist()]
         
-        # Added a few more fallbacks just in case Wikipedia structure changes again
+        # Added fallbacks just in case Wikipedia structure changes again
         # to ensure it passes the min_stocks = 5 requirement
         return ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL"]
     except:
         return ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL"]
-
-@st.cache_data(ttl=86400)
-def get_nasdaq100_tickers():
-    try:
-        url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers)
-        tables = pd.read_html(StringIO(response.text))
-        for table in tables:
-            if 'Ticker' in table.columns:
-                return [clean_us_ticker(t) for t in table['Ticker'].tolist()]
-        return ["AAPL", "MSFT", "NVDA"]
-    except:
-        return ["AAPL", "MSFT", "NVDA"]
 
 # --- STATIC LISTS (EXACT COUNTS) ---
 hsi_list = [
