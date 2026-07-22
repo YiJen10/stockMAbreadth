@@ -202,6 +202,7 @@ def get_breadth_data(index_name, tickers):
         return latest, history_df
 
     except Exception as e:
+        st.error(f"Error fetching data for {index_name}: {e}")
         return None, None
 
 # --- MAIN APP ---
