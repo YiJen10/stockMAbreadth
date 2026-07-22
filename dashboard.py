@@ -7,6 +7,7 @@ from io import StringIO
 import plotly.graph_objects as go 
 import gc 
 from datetime import datetime, timedelta
+import concurrent.futures
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Market Breadth Dashboard")
@@ -15,7 +16,7 @@ st.set_page_config(layout="wide", page_title="Market Breadth Dashboard")
 def clean_us_ticker(ticker):
     return str(ticker).replace(".", "-")
 
-# --- DATA FETCHING (US) ---
+# --- DATA FETCHING (DYNAMIC WITH NAMES) ---
 @st.cache_data(ttl=86400)
 def get_sp500_tickers():
     try:
@@ -23,96 +24,94 @@ def get_sp500_tickers():
         headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers)
         df = pd.read_html(StringIO(response.text))[0]
-        return [clean_us_ticker(t) for t in df['Symbol'].tolist()]
+        tickers = [clean_us_ticker(t) for t in df['Symbol'].tolist()]
+        names = df['Security'].tolist()
+        return dict(zip(tickers, names))
     except:
-        return ["AAPL", "MSFT", "GOOGL"]
+        return {"AAPL": "Apple", "MSFT": "Microsoft"}
 
 @st.cache_data(ttl=86400)
 def get_nasdaq100_tickers():
     try:
-        # FIX 1: Updated URL to the new Wikipedia constituent list
         url = "https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies"
         headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers)
         tables = pd.read_html(StringIO(response.text))
         for table in tables:
             if 'Ticker' in table.columns:
-                return [clean_us_ticker(t) for t in table['Ticker'].tolist()]
-        
-        # Added fallbacks just in case Wikipedia structure changes again
-        # to ensure it passes the min_stocks = 5 requirement
-        return ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL"]
+                tickers = [clean_us_ticker(t) for t in table['Ticker'].tolist()]
+                names = table['Company'].tolist()
+                return dict(zip(tickers, names))
+        return {"AAPL": "Apple", "MSFT": "Microsoft"}
     except:
-        return ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL"]
+        return {"AAPL": "Apple", "MSFT": "Microsoft"}
 
-# --- STATIC LISTS (EXACT COUNTS) ---
-hsi_list = [
-    "0001.HK", "0002.HK", "0003.HK", "0005.HK", "0006.HK", "0011.HK", "0012.HK", "0016.HK", "0017.HK", "0027.HK",
-    "0066.HK", "0101.HK", "0175.HK", "0241.HK", "0267.HK", "0285.HK", "0288.HK", "0316.HK", "0386.HK", "0388.HK",
-    "0522.HK", "0669.HK", "0688.HK", "0700.HK", "0762.HK", "0823.HK", "0857.HK", "0868.HK", "0883.HK", "0939.HK",
-    "0941.HK", "0960.HK", "0968.HK", "0981.HK", "0992.HK", "1038.HK", "1044.HK", "1088.HK", "1093.HK", "1109.HK",
-    "1113.HK", "1177.HK", "1209.HK", "1211.HK", "1299.HK", "1378.HK", "1398.HK", "1810.HK", "1876.HK", "1928.HK",
-    "1929.HK", "1997.HK", "2007.HK", "2015.HK", "2020.HK", "2269.HK", "2313.HK", "2318.HK", "2319.HK", "2331.HK",
-    "2382.HK", "2388.HK", "2628.HK", "2688.HK", "2899.HK", "3690.HK", "3692.HK", "3968.HK", "3988.HK", "6098.HK",
-    "6618.HK", "6690.HK", "6862.HK", "9618.HK", "9633.HK", "9888.HK", "9961.HK", "9988.HK", "9999.HK", "0019.HK",
-    "0836.HK", "1099.HK", "1193.HK", "1972.HK", "3998.HK", "0010.HK", "0031.HK", "0041.HK", "0083.HK"
-]
+@st.cache_data(ttl=86400)
+def get_klci_tickers():
+    try:
+        # Dynamically pull the latest 30 KLCI constituents from Wikipedia
+        url = "https://en.wikipedia.org/wiki/FTSE_Bursa_Malaysia_KLCI"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers)
+        tables = pd.read_html(StringIO(response.text))
+        
+        for table in tables:
+            # 1. Find the column holding the ticker symbols
+            ticker_col = None
+            if 'Ticker' in table.columns: ticker_col = 'Ticker'
+            elif 'Stock Code' in table.columns: ticker_col = 'Stock Code'
+            
+            if ticker_col:
+                # Format exactly as Yahoo Finance requires (e.g., 1155 -> 1155.KL)
+                tickers = [f"{str(t).zfill(4)}.KL" for t in table[ticker_col].tolist()]
+                
+                # 2. Find the column holding the company names (Checking multiple possible names)
+                name_col = None
+                if 'Company' in table.columns: name_col = 'Company'
+                elif 'Name' in table.columns: name_col = 'Name'
+                elif 'Constituent' in table.columns: name_col = 'Constituent'
+                elif 'Company Name' in table.columns: name_col = 'Company Name'
+                elif 'Constituent Name' in table.columns: name_col = 'Constituent Name'
+                
+                names = table[name_col].tolist() if name_col else tickers
+                return dict(zip(tickers, names))
+                
+        return {"1155.KL": "Maybank", "1023.KL": "CIMB"}
+    except:
+        return {"1155.KL": "Maybank", "1023.KL": "CIMB"}
 
-hstech_list = [
-    "0700.HK", "9988.HK", "3690.HK", "1810.HK", "9618.HK", "1024.HK", "2015.HK", "0981.HK",
-    "0285.HK", "0780.HK", "0992.HK", "1347.HK", "1797.HK", "2382.HK", "3888.HK", "6618.HK",
-    "9626.HK", "9888.HK", "9961.HK", "9999.HK", "0522.HK", "0772.HK", "1478.HK", "1833.HK",
-    "2013.HK", "2018.HK", "3033.HK", "6060.HK", "6690.HK", "9868.HK"
-]
+# --- HELPER: FAST NAME FETCHER FOR SECTORS ---
+@st.cache_data(ttl=604800) # Cache sector names for 7 days
+def get_names_for_list(ticker_list):
+    def fetch_name(ticker):
+        try:
+            name = yf.Ticker(ticker).info.get('shortName', ticker)
+            return ticker, name
+        except:
+            return ticker, ticker
 
-klci_list = [
-    "1155.KL", "1023.KL", "1295.KL", "5347.KL", "5183.KL", "6033.KL", "5285.KL", "4065.KL",
-    "2445.KL", "1961.KL", "4707.KL", "5819.KL", "6947.KL", "5296.KL", "8869.KL", "6012.KL",
-    "3816.KL", "4197.KL", "5225.KL", "5398.KL", "5211.KL", "4863.KL", "1066.KL", "5168.KL",
-    "0166.KL", "7084.KL", "4677.KL", "6742.KL", "5326.KL", "5681.KL"
-]
+    result_dict = {}
+    # Use multi-threading to fetch all 30-80 names in ~2 seconds instead of 1 minute
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_name, t): t for t in ticker_list}
+        for future in concurrent.futures.as_completed(futures):
+            t, name = future.result()
+            result_dict[t] = name
+    return result_dict
 
-myx_tech = [
-    "0002.KL", "0005.KL", "0006.KL", "0008.KL", "0010.KL", "0012.KL", "0018.KL", "0020.KL",
-    "0021.KL", "0022.KL", "0023.KL", "0025.KL", "0029.KL", "0034.KL", "0035.KL", "0036.KL",
-    "0040.KL", "0041.KL", "0045.KL", "0051.KL", "0055.KL", "0060.KL", "0065.KL", "0068.KL",
-    "0069.KL", "0070.KL", "0079.KL", "0083.KL", "0085.KL", "0086.KL", "0090.KL", "0093.KL",
-    "0097.KL", "0104.KL", "0105.KL", "0106.KL", "0107.KL", "0109.KL", "0111.KL", "0112.KL",
-    "0113.KL", "0117.KL", "0118.KL", "0119.KL", "0120.KL", "0126.KL", "0127.KL", "0128.KL",
-    "0131.KL", "0132.KL", "0138.KL", "0140.KL", "0143.KL", "0145.KL", "0146.KL", "0151.KL",
-    "0152.KL", "0154.KL", "0155.KL", "0156.KL", "0157.KL", "0158.KL", "0163.KL", "0165.KL",
-    "0166.KL", "0167.KL", "0169.KL", "0174.KL", "0175.KL", "0176.KL", "0181.KL", "0191.KL",
-    "0196.KL", "0200.KL", "0201.KL", "0202.KL", "0203.KL", "0205.KL", "0206.KL", "0208.KL",
-    "0209.KL", "0212.KL", "0236.KL", "0246.KL", "0249.KL", "0251.KL", "0253.KL", "0258.KL",
-    "0259.KL", "0263.KL", "0265.KL", "0272.KL", "0275.KL", "0276.KL", "0277.KL", "0278.KL",
-    "0279.KL", "0290.KL", "0305.KL", "0306.KL", "0319.KL", "0328.KL", "0343.KL", "0358.KL",
-    "3867.KL", "4359.KL", "4456.KL", "5005.KL", "5011.KL", "5028.KL", "5036.KL", "5161.KL",
-    "5162.KL", "5195.KL", "5204.KL", "5216.KL", "5286.KL", "5292.KL", "5301.KL", "5309.KL",
-    "5347.KL", "7022.KL", "7160.KL", "7181.KL", "7204.KL", "8338.KL", "9008.KL", "9075.KL",
-    "9334.KL", "9377.KL", "9393.KL"
-]
+# --- STATIC LISTS (WILL FETCH NAMES DYNAMICALLY) ---
+hsi_list = ["0001.HK", "0002.HK", "0003.HK", "0005.HK", "0006.HK", "0011.HK", "0012.HK", "0016.HK", "0017.HK", "0027.HK", "0066.HK", "0101.HK", "0175.HK", "0241.HK", "0267.HK", "0285.HK", "0288.HK", "0316.HK", "0386.HK", "0388.HK", "0522.HK", "0669.HK", "0688.HK", "0700.HK", "0762.HK", "0823.HK", "0857.HK", "0868.HK", "0883.HK", "0939.HK", "0941.HK", "0960.HK", "0968.HK", "0981.HK", "0992.HK", "1038.HK", "1044.HK", "1088.HK", "1093.HK", "1109.HK", "1113.HK", "1177.HK", "1209.HK", "1211.HK", "1299.HK", "1378.HK", "1398.HK", "1810.HK", "1876.HK", "1928.HK", "1929.HK", "1997.HK", "2007.HK", "2015.HK", "2020.HK", "2269.HK", "2313.HK", "2318.HK", "2319.HK", "2331.HK", "2382.HK", "2388.HK", "2628.HK", "2688.HK", "2899.HK", "3690.HK", "3692.HK", "3968.HK", "3988.HK", "6098.HK", "6618.HK", "6690.HK", "6862.HK", "9618.HK", "9633.HK", "9888.HK", "9961.HK", "9988.HK", "9999.HK", "0019.HK", "0836.HK", "1099.HK", "1193.HK", "1972.HK", "3998.HK", "0010.HK", "0031.HK", "0041.HK", "0083.HK"]
+hstech_list = ["0700.HK", "9988.HK", "3690.HK", "1810.HK", "9618.HK", "1024.HK", "2015.HK", "0981.HK", "0285.HK", "0780.HK", "0992.HK", "1347.HK", "1797.HK", "2382.HK", "3888.HK", "6618.HK", "9626.HK", "9888.HK", "9961.HK", "9999.HK", "0522.HK", "0772.HK", "1478.HK", "1833.HK", "2013.HK", "2018.HK", "3033.HK", "6060.HK", "6690.HK", "9868.HK"]
+myx_tech = ["0002.KL", "0005.KL", "0006.KL", "0008.KL", "0010.KL", "0012.KL", "0018.KL", "0020.KL", "0021.KL", "0022.KL", "0023.KL", "0025.KL", "0029.KL", "0034.KL", "0035.KL", "0036.KL", "0040.KL", "0041.KL", "0045.KL", "0051.KL", "0055.KL", "0060.KL", "0065.KL", "0068.KL", "0069.KL", "0070.KL", "0079.KL", "0083.KL", "0085.KL", "0086.KL", "0090.KL", "0093.KL", "0097.KL", "0104.KL", "0105.KL", "0106.KL", "0107.KL", "0109.KL", "0111.KL", "0112.KL", "0113.KL", "0117.KL", "0118.KL", "0119.KL", "0120.KL", "0126.KL", "0127.KL", "0128.KL", "0131.KL", "0132.KL", "0138.KL", "0140.KL", "0143.KL", "0145.KL", "0146.KL", "0151.KL", "0152.KL", "0154.KL", "0155.KL", "0156.KL", "0157.KL", "0158.KL", "0163.KL", "0165.KL", "0166.KL", "0167.KL", "0169.KL", "0174.KL", "0175.KL", "0176.KL", "0181.KL", "0191.KL", "0196.KL", "0200.KL", "0201.KL", "0202.KL", "0203.KL", "0205.KL", "0206.KL", "0208.KL", "0209.KL", "0212.KL", "0236.KL", "0246.KL", "0249.KL", "0251.KL", "0253.KL", "0258.KL", "0259.KL", "0263.KL", "0265.KL", "0272.KL", "0275.KL", "0276.KL", "0277.KL", "0278.KL", "0279.KL", "0290.KL", "0305.KL", "0306.KL", "0319.KL", "0328.KL", "0343.KL", "0358.KL", "3867.KL", "4359.KL", "4456.KL", "5005.KL", "5011.KL", "5028.KL", "5036.KL", "5161.KL", "5162.KL", "5195.KL", "5204.KL", "5216.KL", "5286.KL", "5292.KL", "5301.KL", "5309.KL", "5347.KL", "7022.KL", "7160.KL", "7181.KL", "7204.KL", "8338.KL", "9008.KL", "9075.KL", "9334.KL", "9377.KL", "9393.KL"]
+myx_plant = ["2089.KL", "7501.KL", "9695.KL", "2291.KL", "5138.KL", "5112.KL", "5026.KL", "5027.KL", "5135.KL", "2569.KL", "5323.KL", "5319.KL", "8966.KL", "7382.KL", "7054.KL", "5223.KL", "5222.KL", "5113.KL", "5069.KL", "5029.KL", "5012.KL", "4936.KL", "4383.KL", "4316.KL", "3948.KL", "2593.KL", "2542.KL", "2453.KL", "2445.KL", "2135.KL", "2038.KL", "1996.KL", "1929.KL", "1902.KL", "1899.KL", "0355.KL", "0189.KL", "5126.KL", "5285.KL", "6262.KL", "9059.KL", "2607.KL", "1961.KL", "2054.KL"]
+myx_finance = ["1082.KL", "1023.KL", "6139.KL", "5139.KL", "9296.KL", "0242.KL", "3441.KL", "6009.KL", "3379.KL", "6483.KL", "1058.KL", "7082.KL", "1198.KL", "2143.KL", "5230.KL", "5274.KL", "5258.KL", "2488.KL", "1818.KL", "5819.KL", "1171.KL", "5088.KL", "5228.KL", "6459.KL", "5185.KL", "5325.KL", "1015.KL", "1295.KL", "1066.KL", "8621.KL", "1155.KL", "1163.KL"]
 
-myx_plant = [
-    "2089.KL", "7501.KL", "9695.KL", "2291.KL", "5138.KL", "5112.KL", "5026.KL", "5027.KL",
-    "5135.KL", "2569.KL", "5323.KL", "5319.KL", "8966.KL", "7382.KL", "7054.KL", "5223.KL",
-    "5222.KL", "5113.KL", "5069.KL", "5029.KL", "5012.KL", "4936.KL", "4383.KL", "4316.KL",
-    "3948.KL", "2593.KL", "2542.KL", "2453.KL", "2445.KL", "2135.KL", "2038.KL", "1996.KL",
-    "1929.KL", "1902.KL", "1899.KL", "0355.KL", "0189.KL", "5126.KL", "5285.KL", "6262.KL",
-    "9059.KL", "2607.KL", "1961.KL", "2054.KL"
-]
-
-myx_finance = [
-    "1082.KL", "1023.KL", "6139.KL", "5139.KL", "9296.KL", "0242.KL", "3441.KL", "6009.KL",
-    "3379.KL", "6483.KL", "1058.KL", "7082.KL", "1198.KL", "2143.KL", "5230.KL", "5274.KL",
-    "5258.KL", "2488.KL", "1818.KL", "5819.KL", "1171.KL", "5088.KL", "5228.KL", "6459.KL",
-    "5185.KL", "5325.KL", "1015.KL", "1295.KL", "1066.KL", "8621.KL", "1155.KL", "1163.KL"
-]
-
-# --- CALCULATION LOGIC (HOLIDAY AWARE) ---
+# --- CALCULATION LOGIC ---
 @st.cache_data(ttl=300)
-def get_breadth_data(index_name, tickers):
+def get_breadth_data(index_name, ticker_dict):
+    tickers = list(ticker_dict.keys())
     if not tickers:
-        return None, None
+        return None, None, None
 
     try:
         data = yf.download(tickers, period="10y", progress=False, threads=False)
@@ -136,15 +135,13 @@ def get_breadth_data(index_name, tickers):
         del data
         gc.collect()
 
-        # FIX: Force everything to be purely numeric so Plotly doesn't interpret strings/objects
         df_close = df_close.apply(pd.to_numeric, errors='coerce')
-
         df_close = df_close.dropna(axis=1, how='all')
 
         if df_close.empty:
-            return None, None
+            return None, None, None
 
-        # 2. BULLETPROOF DATETIME CLEANING
+        # 2. DATETIME CLEANING
         if isinstance(df_close.index, pd.DatetimeIndex):
             if df_close.index.tz is not None:
                 df_close.index = df_close.index.tz_convert(None)
@@ -155,15 +152,14 @@ def get_breadth_data(index_name, tickers):
         df_close = df_close[~df_close.index.duplicated(keep='first')].sort_index()
 
         # 3. HOLIDAY FILTERING
-        df_close = df_close.dropna(axis=0, how='all')
-        df_close = df_close.ffill()
+        df_close = df_close.dropna(axis=0, how='all').ffill()
 
         # 4. Calculate MAs
         ma20 = df_close.rolling(window=20).mean()
         ma50 = df_close.rolling(window=50).mean()
         ma200 = df_close.rolling(window=200).mean()
 
-        # 5. Calculate Breadth 
+        # 5. Calculate Index Breadth 
         count_20 = ma20.count(axis=1)
         count_50 = ma50.count(axis=1)
         count_200 = ma200.count(axis=1)
@@ -176,7 +172,6 @@ def get_breadth_data(index_name, tickers):
         pct_50 = (above_50 / count_50 * 100)
         pct_200 = (above_200 / count_200 * 100)
 
-        # 6. Final Clean
         min_stocks = 5
         valid_days = count_20 >= min_stocks
         
@@ -185,12 +180,10 @@ def get_breadth_data(index_name, tickers):
             "% > MA50": pct_50[valid_days],
             "% > MA200": pct_200[valid_days]
         }).fillna(0)
-        
-        # Explicitly name the index so reset_index() creates "Date" column safely
         history_df.index.name = "Date"
 
         if history_df.empty:
-            return None, None
+            return None, None, None
 
         latest = {
             "Index": index_name,
@@ -198,12 +191,28 @@ def get_breadth_data(index_name, tickers):
             "% > MA50": round(float(history_df["% > MA50"].iloc[-1]), 2),
             "% > MA200": round(float(history_df["% > MA200"].iloc[-1]), 2)
         }
+
+        # 6. Generate Details for the Constituent Table
+        last_prices = df_close.iloc[-1]
+        last_ma20 = ma20.iloc[-1]
+        last_ma50 = ma50.iloc[-1]
+        last_ma200 = ma200.iloc[-1]
         
-        return latest, history_df
+        details_df = pd.DataFrame({
+            "Ticker": df_close.columns,
+            "Company Name": [ticker_dict.get(t, t) for t in df_close.columns],
+            "Price": last_prices.values,
+            "> MA20": (last_prices > last_ma20).values,
+            "> MA50": (last_prices > last_ma50).values,
+            "> MA200": (last_prices > last_ma200).values
+        }).dropna(subset=['Price']).reset_index(drop=True)
+
+        return latest, history_df, details_df
 
     except Exception as e:
-        st.error(f"Error fetching data for {index_name}: {e}")
-        return None, None
+        st.error(f"Data calculation error for {index_name}: {e}")
+        return None, None, None
+
 
 # --- MAIN APP ---
 st.title("📊 Live Market Breadth Dashboard")
@@ -214,34 +223,47 @@ if st.button('Refresh Data Now'):
     st.cache_data.clear()
     st.rerun()
 
-with st.spinner("Fetching data..."):
-    sp500_list = get_sp500_tickers()
-    ndx_list = get_nasdaq100_tickers()
+with st.spinner("Fetching data and company names..."):
+    # Load dynamic dictionaries
+    sp500_dict = get_sp500_tickers()
+    ndx_dict = get_nasdaq100_tickers()
+    klci_dict = get_klci_tickers()
+    
+    # Load sector dictionaries using multi-threading
+    hsi_dict = get_names_for_list(hsi_list)
+    hstech_dict = get_names_for_list(hstech_list)
+    myx_tech_dict = get_names_for_list(myx_tech)
+    myx_plant_dict = get_names_for_list(myx_plant)
+    myx_finance_dict = get_names_for_list(myx_finance)
 
 constituents = {
-    "S&P 500 (SPX)": sp500_list,
-    "Nasdaq 100 (NDX)": ndx_list,
-    "Hang Seng (HSI)": hsi_list,
-    "Hang Seng Tech": hstech_list,
-    "FBM KLCI": klci_list,
-    "MYX: Technology": myx_tech,
-    "MYX: Plantation": myx_plant,
-    "MYX: Financial Services": myx_finance
+    "S&P 500 (SPX)": sp500_dict,
+    "Nasdaq 100 (NDX)": ndx_dict,
+    "Hang Seng (HSI)": hsi_dict,
+    "Hang Seng Tech": hstech_dict,
+    "FBM KLCI": klci_dict,
+    "MYX: Technology": myx_tech_dict,
+    "MYX: Plantation": myx_plant_dict,
+    "MYX: Financial Services": myx_finance_dict
 }
 
 # 1. PROCESS ALL DATA
 table_data = []
 history_data = {}
+details_data = {} # New dictionary to hold constituent tables
 
 cols = st.columns(len(constituents))
 progress_bar = st.progress(0)
 
-for i, (name, tickers) in enumerate(constituents.items()):
-    cols[i].metric(label=name.split("(")[0], value=len(tickers))
-    latest, history = get_breadth_data(name, tickers)
-    if latest:
+for i, (name, ticker_dict) in enumerate(constituents.items()):
+    cols[i].metric(label=name.split("(")[0].strip(), value=len(ticker_dict))
+    latest, history, details = get_breadth_data(name, ticker_dict)
+    
+    if latest is not None:
         table_data.append(latest)
         history_data[name] = history
+        details_data[name] = details
+        
     progress_bar.progress((i + 1) / len(constituents))
 
 progress_bar.empty()
@@ -282,14 +304,11 @@ with col2:
     if selected_index in history_data:
         df_chart = history_data[selected_index].reset_index()
         
-        # FIX: Strip Pandas from Plotly by converting columns into pure Python lists
-        # This completely stops Plotly from accidentally reading the row index!
         x_dates = df_chart["Date"].tolist()
         y_20 = df_chart["% > MA20"].tolist()
         y_50 = df_chart["% > MA50"].tolist()
         y_200 = df_chart["% > MA200"].tolist()
         
-        # Create Plotly Figure
         fig = go.Figure()
 
         if show_ma20:
@@ -299,7 +318,6 @@ with col2:
         if show_ma200:
             fig.add_trace(go.Scatter(x=x_dates, y=y_200, mode='lines', name='% > MA200', line=dict(color='green')))
 
-        # Add Range Slider & Zoom
         fig.update_layout(
             title=f"{selected_index} Breadth History",
             xaxis=dict(
@@ -309,7 +327,7 @@ with col2:
                         dict(count=6, label="6m", step="month", stepmode="backward"),
                         dict(count=1, label="YTD", step="year", stepmode="todate"),
                         dict(count=1, label="1y", step="year", stepmode="backward"),
-                        dict(count=5, label="5y", step="year", stepmode="backward"), # New 5-year button
+                        dict(count=5, label="5y", step="year", stepmode="backward"),
                         dict(step="all", label="10y")
                     ])
                 ),
@@ -324,3 +342,30 @@ with col2:
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("Data not available for this index.")
+
+# 4. DISPLAY CONSTITUENT BREAKDOWN
+st.divider()
+st.subheader(f"🏢 Constituent Breakdown: {selected_index}")
+st.write("View the latest moving average status for every individual company inside this index.")
+
+if selected_index in details_data:
+    df_details = details_data[selected_index]
+    
+    # Format the Price column
+    df_details['Price'] = df_details['Price'].round(2)
+    
+    # Add a custom style to the dataframe to make True/False easier to read
+    def highlight_bool(val):
+        if val is True:
+            return 'color: #4CAF50; font-weight: bold' # Green
+        elif val is False:
+            return 'color: #FF5252; font-weight: bold' # Red
+        return ''
+
+    st.dataframe(
+        df_details.style.map(highlight_bool, subset=['> MA20', '> MA50', '> MA200']),
+        use_container_width=True,
+        hide_index=True
+    )
+else:
+    st.warning("Constituent data is not available.")
