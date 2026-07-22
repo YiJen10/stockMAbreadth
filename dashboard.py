@@ -101,6 +101,13 @@ myx_plant = [
     "9059.KL", "2607.KL", "1961.KL", "2054.KL"
 ]
 
+myx_finance = [
+    "1082.KL", "1023.KL", "6139.KL", "5139.KL", "9296.KL", "0242.KL", "3441.KL", "6009.KL",
+    "3379.KL", "6483.KL", "1058.KL", "7082.KL", "1198.KL", "2143.KL", "5230.KL", "5274.KL",
+    "5258.KL", "2488.KL", "1818.KL", "5819.KL", "1171.KL", "5088.KL", "5228.KL", "6459.KL",
+    "5185.KL", "5325.KL", "1015.KL", "1295.KL", "1066.KL", "8621.KL", "1155.KL", "1163.KL"
+]
+
 # --- CALCULATION LOGIC (HOLIDAY AWARE) ---
 @st.cache_data(ttl=300)
 def get_breadth_data(index_name, tickers):
@@ -217,7 +224,8 @@ constituents = {
     "Hang Seng Tech": hstech_list,
     "FBM KLCI": klci_list,
     "MYX: Technology": myx_tech,
-    "MYX: Plantation": myx_plant
+    "MYX: Plantation": myx_plant,
+    "MYX: Financial Services": myx_finance
 }
 
 # 1. PROCESS ALL DATA
