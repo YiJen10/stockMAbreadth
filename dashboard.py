@@ -80,23 +80,32 @@ def get_klci_tickers():
     except:
         return {"1155.KL": "Maybank", "1023.KL": "CIMB"}
 
-# --- HELPER: FAST NAME FETCHER FOR SECTORS ---
-@st.cache_data(ttl=604800) # Cache sector names for 7 days
+# --- HELPER: SAFE & FAST NAME FETCHER ---
+@st.cache_data(ttl=604800) # Caches the names for 7 days so it loads instantly
 def get_names_for_list(ticker_list):
     def fetch_name(ticker):
         try:
-            name = yf.Ticker(ticker).info.get('shortName', ticker)
-            return ticker, name
+            # We use Yahoo's hidden search API instead of the rate-limited yfinance .info
+            url = f"https://query2.finance.yahoo.com/v1/finance/search?q={ticker}"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, headers=headers, timeout=5)
+            data = response.json()
+            
+            # Extract the short company name from the search results
+            if 'quotes' in data and len(data['quotes']) > 0:
+                return ticker, data['quotes'][0].get('shortname', ticker)
+            return ticker, ticker
         except:
             return ticker, ticker
 
     result_dict = {}
-    # Use multi-threading to fetch all 30-80 names in ~2 seconds instead of 1 minute
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # We use a polite number of workers (5) to fetch names concurrently without triggering blocks
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(fetch_name, t): t for t in ticker_list}
         for future in concurrent.futures.as_completed(futures):
             t, name = future.result()
             result_dict[t] = name
+            
     return result_dict
 
 # --- STATIC LISTS (WILL FETCH NAMES DYNAMICALLY) ---
